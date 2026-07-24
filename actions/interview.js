@@ -4,8 +4,39 @@ import { db } from "@/lib/prisma";
 import { auth } from "@clerk/nextjs/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const geminiApiKey = process.env.GEMINI_API_KEY;
+const genAI = geminiApiKey ? new GoogleGenerativeAI(geminiApiKey) : null;
+const model = genAI ? genAI.getGenerativeModel({ model: "gemini-2.0-flash" }) : null;
+
+function buildFallbackQuiz(user) {
+  const industry = user?.industry || "technology";
+  const skills = user?.skills?.length ? user.skills.join(", ") : "relevant domain skills";
+
+  return [
+    {
+      question: `How would you approach a debugging challenge in ${industry}?`,
+      options: [
+        "Reproduce the issue and isolate the failing component",
+        "Change the code randomly until it works",
+        "Ignore the error and deploy anyway",
+        "Ask someone else to solve it"
+      ],
+      correctAnswer: "Reproduce the issue and isolate the failing component",
+      explanation: "A systematic debugging approach is essential for identifying root causes and implementing reliable fixes."
+    },
+    {
+      question: `Which skill is most valuable when working with ${skills}?`,
+      options: [
+        "Clear communication and collaboration",
+        "Avoiding documentation",
+        "Skipping testing",
+        "Working without feedback"
+      ],
+      correctAnswer: "Clear communication and collaboration",
+      explanation: "Strong collaboration and communication improve delivery quality and help teams solve problems effectively."
+    }
+  ];
+}
 
 export async function generateQuiz() {
     const { userId } = await auth();
@@ -44,6 +75,10 @@ export async function generateQuiz() {
   `;
 
   try {
+    if (!model) {
+      throw new Error("GEMINI_API_KEY is not configured.");
+    }
+
     const result = await model.generateContent(prompt);
     const response = result.response;
     const text = response.text();
@@ -52,8 +87,8 @@ export async function generateQuiz() {
 
     return quiz.questions;
   } catch (error) {
-    console.error("Error generating quiz:", error);
-    throw new Error("Failed to generate quiz questions");
+    console.warn("Falling back to local interview questions:", error);
+    return buildFallbackQuiz(user);
   }
 }
 
@@ -100,13 +135,14 @@ export async function saveQuizResult(questions, answers, score) {
       `;
   
       try {
+        if (!model) {
+          throw new Error("GEMINI_API_KEY is not configured.");
+        }
+
         const tipResult = await model.generateContent(improvementPrompt);
-  
         improvementTip = tipResult.response.text().trim();
-        console.log(improvementTip);
       } catch (error) {
-        console.error("Error generating improvement tip:", error);
-        // Continue without improvement tip if generation fails
+        console.warn("Falling back without improvement tip:", error);
       }
     }
   

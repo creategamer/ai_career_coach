@@ -4,8 +4,31 @@ import { db } from "@/lib/prisma";
 import { auth } from "@clerk/nextjs/server";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const geminiApiKey = process.env.GEMINI_API_KEY;
+
+const genAI = geminiApiKey ? new GoogleGenerativeAI(geminiApiKey) : null;
+const model = genAI ? genAI.getGenerativeModel({ model: "gemini-2.0-flash" }) : null;
+
+function buildFallbackCoverLetter({ data, user }) {
+  const fullName = user?.name || "Your Name";
+  const companyName = data?.companyName || "the company";
+  const jobTitle = data?.jobTitle || "the role";
+  const industry = user?.industry || "your field";
+  const experience = user?.experience ? `${user.experience} years` : "relevant experience";
+  const skills = user?.skills?.length ? user.skills.join(", ") : "relevant professional skills";
+  const bio = user?.bio || "I bring a strong background and a commitment to delivering results.";
+
+  return `Dear Hiring Manager,
+
+I am excited to apply for the ${jobTitle} position at ${companyName}. With ${experience} in ${industry} and experience in ${skills}, I am confident in my ability to contribute meaningfully to your team.
+
+${bio}
+
+I am especially drawn to ${companyName} because of the opportunity to contribute to your work and grow in a dynamic environment. I would welcome the opportunity to discuss how my background, skills, and enthusiasm can support your team’s goals.
+
+Sincerely,
+${fullName}`;
+}
 
 export async function generateCoverLetter(data) {
   const { userId } = await auth();
@@ -43,10 +66,20 @@ export async function generateCoverLetter(data) {
     Format the letter in markdown.
   `;
 
-  try {
-    const result = await model.generateContent(prompt);
-    const content = result.response.text().trim();
+  let content = buildFallbackCoverLetter({ data, user });
 
+  try {
+    if (!model) {
+      throw new Error("GEMINI_API_KEY is not configured.");
+    }
+
+    const result = await model.generateContent(prompt);
+    content = result.response.text().trim();
+  } catch (error) {
+    console.warn("Falling back to a template cover letter:", error);
+  }
+
+  try {
     const coverLetter = await db.coverLetter.create({
       data: {
         content,
@@ -60,8 +93,17 @@ export async function generateCoverLetter(data) {
 
     return coverLetter;
   } catch (error) {
-    console.error("Error generating cover letter:", error.message);
-    throw new Error("Failed to generate cover letter");
+    console.error("Error generating cover letter:", error);
+
+    if (error?.status === 429 || error?.message?.includes("429") || error?.message?.includes("quota")) {
+      throw new Error("The Gemini API quota has been exceeded. Please try again in a moment.");
+    }
+
+    if (error?.message?.includes("API key")) {
+      throw new Error("The Gemini API key is invalid or not configured.");
+    }
+
+    throw new Error(error.message || "Failed to generate cover letter");
   }
 }
 
